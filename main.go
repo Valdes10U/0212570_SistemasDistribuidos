@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"sync"
 )
 
 type Record struct {
@@ -12,7 +13,12 @@ type Record struct {
 	Offset uint64 `json:"offset"`
 }
 
-var records []Record
+type Log struct {
+	mu      sync.Mutex
+	records []Record
+}
+
+var log = Log{}
 
 func writeHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -22,7 +28,7 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
@@ -32,11 +38,14 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.mu.Lock()
+	defer log.mu.Unlock()
+
 	record := Record{
 		Value:  decodedValue,
-		Offset: uint64(len(records)),
+		Offset: uint64(len(log.records)),
 	}
-	records = append(records, record)
+	log.records = append(log.records, record)
 
 	res := struct {
 		Offset uint64 `json:"offset"`
@@ -51,24 +60,22 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func readHandler(w http.ResponseWriter, r *http.Request) {
-	offsetStr := r.URL.Query().Get("offset")
-	if offsetStr == "" {
-		http.Error(w, "missing offset parameter", http.StatusBadRequest)
-		return
-	}
-
-	offset, err := strconv.ParseUint(offsetStr, 10, 64)
+	offsetParam := r.URL.Query().Get("offset")
+	offset, err := strconv.ParseUint(offsetParam, 10, 64)
 	if err != nil {
-		http.Error(w, "invalid offset parameter", http.StatusBadRequest)
+		http.Error(w, "invalid offset", http.StatusBadRequest)
 		return
 	}
 
-	if offset >= uint64(len(records)) {
-		http.Error(w, "offset out of range", http.StatusBadRequest)
+	log.mu.Lock()
+	defer log.mu.Unlock()
+
+	if offset >= uint64(len(log.records)) {
+		http.Error(w, "offset out of range", http.StatusNotFound)
 		return
 	}
 
-	record := records[offset]
+	record := log.records[offset]
 
 	res := struct {
 		Value string `json:"value"`
